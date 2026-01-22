@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package walstream.v1;
+
+// ==========================================================================
+// Core Data Types
+// ==========================================================================
+
+// ChangeRecord represents a single database change event captured from WAL.
+message ChangeRecord {
+  // Log Sequence Number from PostgreSQL
+  string lsn = 1;
+
+  // Unix timestamp in milliseconds when the change was committed
+  int64 commit_time = 2;
+
+  // Fully qualified table name (schema.table)
+  string table = 3;
+
+  // Operation type: INSERT, UPDATE, DELETE, TRUNCATE
+  string operation = 4;
+
+  // Previous row values (for UPDATE and DELETE)
+  map<string, string> old = 5;
+
+  // New row values (for INSERT and UPDATE)
+  map<string, string> new = 6;
+
+  // Reserved for future v1 additions
+  reserved 50 to 100;
+}
+
+// ReplayRequest is sent to the Replayer service to replay an event.
+message ReplayRequest {
+  // UUID of the replay job this event belongs to
+  string job_id = 1;
+
+  // The change event to replay
+  ChangeRecord event = 2;
+
+  // Adjusted timestamp based on speed_factor
+  int64 virtual_time = 3;
+
+  // Original commit timestamp
+  int64 original_time = 4;
+
+  // Speed multiplier used for replay timing
+  float speed_factor = 5;
+
+  // Pre-computed idempotency key for deduplication
+  string idempotency_key = 6;
+}
+
+// ReplayResponse indicates the result of replaying an event.
+message ReplayResponse {
+  // Whether the replay was successful
+  bool success = 1;
+
+  // Human-readable message (error details on failure)
+  string message = 2;
+
+  // True if the event was skipped due to deduplication
+  bool was_duplicate = 3;
+}
+
+// ==========================================================================
+// Health Check
+// ==========================================================================
+
+message HealthRequest {}
+
+message HealthResponse {
+  // Whether the service is healthy
+  bool healthy = 1;
+
+  // Status of individual components (e.g., "database": "ok")
+  map<string, string> components = 2;
+}
+
+// ==========================================================================
+// Services (Internal gRPC only)
+// ==========================================================================
+
+// Replayer service handles the actual replay of events to target systems.
+service Replayer {
+  // Replay a single event with idempotency enforcement.
+  rpc ReplayEvent(ReplayRequest) returns (ReplayResponse);
+
+  // Health check endpoint.
+  rpc Health(HealthRequest) returns (HealthResponse);
+}

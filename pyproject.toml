@@ -1,0 +1,77 @@
+[project]
+name = "walstream-cdc"
+version = "1.0.0"
+description = "WalStream CDC - Change Data Capture system with FastAPI, PostgreSQL, Redis, and Kafka"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Core Framework
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+    "psycopg2-binary>=2.9.0",
+
+    # Message Queues
+    "redis>=5.0.0",
+    "aiokafka>=0.10.0",
+    "kafka-python>=2.0.0",
+
+    # gRPC
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "protobuf>=4.25.0",
+
+    # Authentication
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+
+    # Observability
+    "prometheus-client>=0.19.0",
+
+    # HTTP Client
+    "httpx>=0.26.0",
+
+    # Utilities
+    "python-multipart>=0.0.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "httpx>=0.26.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["walstream_proto*", "control*", "ingestor*", "replayer*", "worker*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
