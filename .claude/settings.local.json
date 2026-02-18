@@ -5,7 +5,26 @@
       "Bash(tree:*)",
       "Bash(mkdir:*)",
       "WebSearch",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(find:*)",
+      "Bash(npx shadcn@latest add:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run build:*)",
+      "Bash(test:*)",
+      "Bash(grep:*)",
+      "Bash(python -c:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(.venv/Scripts/python -m pytest control/tests/ -x -v --tb=short)",
+      "Bash(.venv/Scripts/pip list:*)",
+      "Bash(.venv/Scripts/python -m pip:*)",
+      "Bash(.venv/Scripts/python.exe -m pip:*)",
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(where:*)",
+      "Bash(ls:*)"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "context7"
+  ]
 }

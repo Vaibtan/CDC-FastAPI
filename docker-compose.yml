@@ -6,7 +6,9 @@ services:
   # ==========================================================================
 
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: db/Dockerfile
     container_name: walstream-postgres
     environment:
       POSTGRES_USER: postgres
@@ -145,7 +147,7 @@ services:
       REPLAYER_HOST: replayer
       REPLAYER_PORT: "50051"
       SECRET_KEY: change-me-in-production-use-long-random-string
-      CORS_ORIGINS: '["http://localhost:3000"]'
+      CORS_ORIGINS: '["http://localhost:3000","http://frontend:3000"]'
       DEBUG: "false"
       METRICS_PORT: "9091"
     ports:
@@ -188,6 +190,22 @@ services:
       REPLAYER_PORT: "50051"
       JOB_WORKER_COUNT: "2"
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: walstream-frontend
+    depends_on:
+      - control
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_WS_URL: ws://localhost:8000
+      PROMETHEUS_INGESTOR_URL: http://ingestor:9090/metrics
+      PROMETHEUS_CONTROL_URL: http://control:9091/metrics
+      PROMETHEUS_REPLAYER_URL: http://replayer:9092/metrics
+    ports:
+      - "3000:3000"
+
   # ==========================================================================
   # Monitoring (Optional)
   # ==========================================================================
@@ -199,10 +217,23 @@ services:
       - "9099:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/alertmanager/rules:/etc/prometheus/rules
       - prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+    profiles:
+      - monitoring
+
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: walstream-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
     profiles:
       - monitoring
 
@@ -215,6 +246,9 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
     profiles:
       - monitoring
 

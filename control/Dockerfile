@@ -23,8 +23,12 @@ COPY control/app/ /app/app/
 COPY control/alembic/ /app/alembic/
 COPY control/alembic.ini /app/
 
-# Run proto generation (if needed)
-RUN python -c "from walstream_proto.generate import main; main()" || true
+# Generate proto files if not already present
+RUN python -c "\
+import os; \
+pb2 = '/app/walstream-proto/walstream_proto/v1/walstream_pb2.py'; \
+exec('from walstream_proto.generate import main; main()') if not os.path.exists(pb2) else None \
+"
 
 # Expose ports
 EXPOSE 8000 9091

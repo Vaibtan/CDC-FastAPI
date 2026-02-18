@@ -17,12 +17,13 @@ from typing import Optional
 
 import grpc
 import redis.asyncio as aioredis
-from sqlalchemy import select, update, and_
+from sqlalchemy import select, update, and_, or_, func
 
 from app.config import get_settings
 from app.database import get_db_context
 from app.models.replay_job import ReplayJob, JobStatus
 from app.services.replay_router import (
+    ReplaySource,
     ReplaySourceRouter,
     KafkaReplaySource,
     ReplayEvent,
@@ -113,29 +114,53 @@ class JobWorker:
 
     async def _acquire_job(self) -> Optional[ReplayJob]:
         """
-        Attempt to acquire a queued job using atomic lease.
+        Attempt to acquire a single eligible job using atomic lease.
 
-        Uses optimistic locking: UPDATE ... WHERE status=QUEUED AND (no lease OR expired lease)
+        Uses a subquery with LIMIT 1 to ensure only one job is updated,
+        even when multiple jobs are eligible.
+
+        Eligible jobs:
+        - QUEUED with no lease or an expired lease
+        - RUNNING with an expired lease (worker crash recovery)
         """
         async with get_db_context() as db:
             now = datetime.utcnow()
             lease_until = now + timedelta(seconds=settings.job_lease_duration_seconds)
 
-            # Atomic acquire: find and lock in one statement
+            eligible = or_(
+                and_(
+                    ReplayJob.status == JobStatus.QUEUED,
+                    (
+                        ReplayJob.lease_expires_at.is_(None)
+                        | (ReplayJob.lease_expires_at < now)
+                    ),
+                ),
+                and_(
+                    ReplayJob.status == JobStatus.RUNNING,
+                    ReplayJob.lease_expires_at.is_not(None),
+                    ReplayJob.lease_expires_at < now,
+                ),
+            )
+
+            # Subquery: pick exactly one eligible job
+            subq = (
+                select(ReplayJob.id)
+                .where(eligible)
+                .order_by(ReplayJob.created_at.asc())
+                .limit(1)
+                .with_for_update(skip_locked=True)
+                .scalar_subquery()
+            )
+
+            # Atomic acquire: update only the one job selected above
             result = await db.execute(
                 update(ReplayJob)
-                .where(
-                    and_(
-                        ReplayJob.status == JobStatus.QUEUED,
-                        (ReplayJob.lease_expires_at.is_(None))
-                        | (ReplayJob.lease_expires_at < now),
-                    )
-                )
+                .where(ReplayJob.id == subq)
                 .values(
                     worker_id=self.worker_id,
                     lease_expires_at=lease_until,
                     status=JobStatus.RUNNING,
-                    started_at=now,
+                    started_at=func.coalesce(ReplayJob.started_at, now),
                 )
                 .returning(ReplayJob.id)
             )
@@ -160,8 +185,13 @@ class JobWorker:
             start_ms = int(job.start_time.timestamp() * 1000)
             end_ms = int(job.end_time.timestamp() * 1000)
 
-            # Select replay source
-            source = self.source_router.get_source(start_ms, end_ms)
+            # On resume/retry, reuse the original source to avoid cross-source
+            # checkpoint confusion (Redis IDs are not valid Kafka offsets and
+            # vice-versa). Only pick a new source when none was set yet.
+            if job.replay_source:
+                source = self.source_router.get_source_by_name(job.replay_source)
+            else:
+                source = self.source_router.get_source(start_ms, end_ms)
 
             async with get_db_context() as db:
                 # Update replay source
@@ -178,16 +208,37 @@ class JobWorker:
             replay_start_real = time.time()
             first_event_time: Optional[int] = None
 
-            checkpoint_counter = 0
-            checkpoint_interval = 100
-
-            # Get checkpoint from job
-            checkpoint = job.last_processed_id
+            # Build checkpoint string from the appropriate column.
+            # Kafka jobs use the JSON checkpoint; Redis jobs use last_processed_id.
+            if source.source_name() == "kafka" and job.checkpoint:
+                checkpoint = json.dumps(
+                    {str(k): v for k, v in job.checkpoint.items()}
+                )
+            else:
+                checkpoint = job.last_processed_id
 
             async for event in source.stream_events(start_ms, end_ms, checkpoint):
                 if not self.running:
-                    await self._checkpoint_job(job.id, event.message_id, JobStatus.PAUSED)
+                    # Checkpoint at the last *processed* event, not the
+                    # current (unprocessed) one, to avoid skipping it on resume.
+                    await self._checkpoint_job(
+                        job.id, job.last_processed_id or "", JobStatus.PAUSED
+                    )
                     return
+
+                # Check for external status changes (API pause/cancel)
+                async with get_db_context() as db:
+                    current_job = await db.get(ReplayJob, job.id)
+                    if current_job.status == JobStatus.PAUSED:
+                        logger.info("Job %s paused via API", job.id)
+                        await self._checkpoint_job(
+                            job.id, job.last_processed_id or "", JobStatus.PAUSED
+                        )
+                        return
+                    if current_job.status == JobStatus.CANCELLED:
+                        logger.info("Job %s cancelled via API", job.id)
+                        self.current_job_id = None
+                        return
 
                 # Initialize timing reference
                 if first_event_time is None:
@@ -201,27 +252,34 @@ class JobWorker:
                     job.speed_factor,
                 )
 
-                # Process event
-                success, was_dup = await self._replay_event(job, event)
+                # Process event with bounded retries.
+                success, was_dup, attempts = await self._replay_event_with_retries(
+                    job, event
+                )
 
-                # Update counters
-                async with get_db_context() as db:
-                    job = await db.get(ReplayJob, job.id)
-                    if success:
+                if success or was_dup:
+                    async with get_db_context() as db:
+                        job = await db.get(ReplayJob, job.id)
                         if was_dup:
                             job.events_skipped_dedup += 1
                         else:
                             job.events_processed += 1
-                    else:
+
+                        # Advance checkpoint only for applied/duplicate events.
+                        self._update_checkpoint(job, event.message_id, source)
+                        job.last_processed_time = datetime.utcnow()
+                else:
+                    async with get_db_context() as db:
+                        job = await db.get(ReplayJob, job.id)
                         job.events_failed += 1
+                        job.last_processed_time = datetime.utcnow()
 
-                    job.last_processed_id = event.message_id
-                    job.last_processed_time = datetime.utcnow()
-
-                    checkpoint_counter += 1
-                    if checkpoint_counter >= checkpoint_interval:
-                        await db.commit()
-                        checkpoint_counter = 0
+                    # Do not continue past a failed event, otherwise later checkpoint
+                    # updates can permanently skip this event.
+                    raise RuntimeError(
+                        "Event %s failed after %d attempts"
+                        % (event.message_id, attempts)
+                    )
 
             # Completed
             await self._complete_job(job.id, JobStatus.COMPLETED)
@@ -245,6 +303,38 @@ class JobWorker:
         now = time.time()
         if target_real_time > now:
             await asyncio.sleep(target_real_time - now)
+
+    async def _replay_event_with_retries(
+        self, job: ReplayJob, event: ReplayEvent
+    ) -> tuple[bool, bool, int]:
+        """
+        Replay one event with bounded retries.
+
+        Returns:
+        - success: target apply (or duplicate skip) was successful
+        - was_duplicate: event was already processed by replayer dedup
+        - attempts: number of attempts made
+        """
+        max_retries = max(0, settings.max_event_retries)
+        max_attempts = max_retries + 1
+
+        for attempt in range(1, max_attempts + 1):
+            success, was_dup = await self._replay_event(job, event)
+            if success or was_dup:
+                return success, was_dup, attempt
+
+            if attempt < max_attempts:
+                backoff_seconds = min(float(2 ** (attempt - 1)), 5.0)
+                logger.warning(
+                    "Replay failed for event %s (attempt %d/%d). Retrying in %.1fs",
+                    event.message_id,
+                    attempt,
+                    max_attempts,
+                    backoff_seconds,
+                )
+                await asyncio.sleep(backoff_seconds)
+
+        return False, False, max_attempts
 
     async def _replay_event(
         self, job: ReplayJob, event: ReplayEvent
@@ -271,6 +361,27 @@ class JobWorker:
         except grpc.RpcError as e:
             logger.error("gRPC error replaying event: %s", e)
             return False, False
+
+    @staticmethod
+    def _update_checkpoint(
+        job: ReplayJob, message_id: str, source: "ReplaySource"
+    ) -> None:
+        """Persist checkpoint in the right column for the source type.
+
+        Kafka events have message_id = "partition:offset" and are stored in
+        the JSON ``checkpoint`` column keyed by partition.  Redis events keep
+        using the flat ``last_processed_id`` string.
+        """
+        if source.source_name() == "kafka" and ":" in message_id:
+            parts = message_id.split(":", 1)
+            partition, offset = int(parts[0]), int(parts[1])
+            cp = dict(job.checkpoint) if job.checkpoint else {}
+            cp[str(partition)] = offset
+            job.checkpoint = cp
+
+        # Always keep last_processed_id in sync so pause/cancel checkpointing
+        # (which only saves last_processed_id) stays usable as a fallback.
+        job.last_processed_id = message_id
 
     async def _lease_renewal_loop(self) -> None:
         """Periodically renew lease on current job."""

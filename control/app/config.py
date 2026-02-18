@@ -48,6 +48,11 @@ class Settings(BaseSettings):
 
     # Deduplication
     dedup_ttl_seconds: int = 604800  # 7 days
+    max_event_retries: int = 3  # Retries per event before marking job failed
+
+    # Rate Limiting
+    rate_limit_capacity: int = 100  # Max tokens per bucket
+    rate_limit_refill_rate: float = 10.0  # Tokens per second
 
     # Security
     secret_key: str = "change-me-in-production-use-long-random-string"
@@ -59,6 +64,7 @@ class Settings(BaseSettings):
 
     # Metrics
     metrics_port: int = 9091
+    job_metrics_refresh_interval_seconds: float = 15.0
 
     # Logging
     log_level: str = "INFO"

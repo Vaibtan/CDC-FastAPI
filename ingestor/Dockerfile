@@ -16,12 +16,16 @@ RUN pip install --no-cache-dir /app/walstream-proto/
 
 # Install ingestor dependencies
 COPY ingestor/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt || true
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy ingestor code
 COPY ingestor/ /app/
 
-# Run proto generation (if needed)
-RUN python -c "from walstream_proto.generate import main; main()" || true
+# Generate proto files if not already present
+RUN python -c "\
+import os; \
+pb2 = '/app/walstream-proto/walstream_proto/v1/walstream_pb2.py'; \
+exec('from walstream_proto.generate import main; main()') if not os.path.exists(pb2) else None \
+"
 
 CMD ["python", "ingestor.py"]

@@ -312,6 +312,57 @@ class AsyncDedupStore:
         if self._pool:
             await self._pool.close()
 
+    async def exists(self, idempotency_key: str) -> bool:
+        """
+        Check if an event has already been processed.
+
+        Returns True if the key exists and hasn't expired.
+        """
+        if not self._pool:
+            raise RuntimeError("Connection pool not initialized")
+
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT 1 FROM walstream_dedup.processed_events
+                    WHERE idempotency_key = $1 AND expires_at > NOW()
+                    """,
+                    idempotency_key,
+                )
+                return row is not None
+        except Exception as e:
+            logger.error("Dedup exists check error: %s", e)
+            raise
+
+    async def mark_processed(
+        self, idempotency_key: str, job_id: Optional[str] = None
+    ) -> None:
+        """
+        Mark an event as processed. Should only be called after successful apply.
+        """
+        if not self._pool:
+            raise RuntimeError("Connection pool not initialized")
+
+        expires_at = datetime.now(timezone.utc) + timedelta(days=self.ttl_days)
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO walstream_dedup.processed_events
+                    (idempotency_key, job_id, expires_at)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (idempotency_key) DO UPDATE
+                SET
+                    processed_at = NOW(),
+                    job_id = EXCLUDED.job_id,
+                    expires_at = EXCLUDED.expires_at
+                """,
+                idempotency_key,
+                job_id,
+                expires_at,
+            )
+
     async def check_and_mark(
         self, idempotency_key: str, job_id: Optional[str] = None
     ) -> tuple[bool, bool]:
@@ -321,6 +372,10 @@ class AsyncDedupStore:
         Returns: (was_new, success)
         - was_new: True if this is a new event (not a duplicate)
         - success: True if the operation completed successfully
+
+        NOTE: Kept for backward compatibility (e.g. health checks).
+        The ReplayEvent method uses exists() + mark_processed() separately
+        to avoid data loss on apply failure.
         """
         if not self._pool:
             raise RuntimeError("Connection pool not initialized")
@@ -329,7 +384,6 @@ class AsyncDedupStore:
 
         try:
             async with self._pool.acquire() as conn:
-                # Use INSERT ... ON CONFLICT for atomicity
                 result = await conn.execute(
                     """
                     INSERT INTO walstream_dedup.processed_events
@@ -342,7 +396,6 @@ class AsyncDedupStore:
                     expires_at,
                 )
 
-                # Check if row was inserted
                 was_new = result == "INSERT 0 1"
                 return (was_new, True)
 
@@ -392,12 +445,13 @@ class ReplayerService(ReplayerServicer):
         self, request: ReplayRequest, context: grpc_aio.ServicerContext
     ) -> ReplayResponse:
         """
-        Replay a single event with idempotency enforcement.
+        Replay a single event with at-least-once semantics.
 
-        Deduplication flow:
+        Deduplication flow (unbundled to prevent data loss):
         1. Compute idempotency key from event
-        2. Atomically check-and-mark in dedup store
-        3. If new, apply to target; if duplicate, skip
+        2. Check if already processed (exists only, no mark)
+        3. If new, apply to target
+        4. Mark as processed ONLY on successful apply
         """
         start_time = time.time()
 
@@ -410,12 +464,10 @@ class ReplayerService(ReplayerServicer):
             else:
                 idemp_key = self._compute_idempotency_key(event)
 
-            # Atomic check and mark
-            was_new, success = await self.dedup_store.check_and_mark(
-                idemp_key, request.job_id
-            )
-
-            if not success:
+            # 1. Check only (no mark)
+            try:
+                already_processed = await self.dedup_store.exists(idemp_key)
+            except Exception:
                 EVENTS_FAILED.labels(error_type="dedup_error").inc()
                 return ReplayResponse(
                     success=False,
@@ -423,8 +475,7 @@ class ReplayerService(ReplayerServicer):
                     was_duplicate=False,
                 )
 
-            if not was_new:
-                # Duplicate - skip
+            if already_processed:
                 EVENTS_DUPLICATES.inc()
                 return ReplayResponse(
                     success=True,
@@ -432,10 +483,12 @@ class ReplayerService(ReplayerServicer):
                     was_duplicate=True,
                 )
 
-            # Apply to target
+            # 2. Apply to target
             applied = await self.target_applier.apply(event)
 
+            # 3. Mark only on success
             if applied:
+                await self.dedup_store.mark_processed(idemp_key, request.job_id)
                 EVENTS_REPLAYED.labels(
                     table=event.table, operation=event.operation
                 ).inc()

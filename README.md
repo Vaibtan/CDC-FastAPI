@@ -1,6 +1,6 @@
 # WalStream CDC
 
-Enterprise Change Data Capture Platform with FastAPI, PostgreSQL, Redis, and Kafka.
+Enterprise Change Data Capture Platform with FastAPI, PostgreSQL, Redis, Kafka, and Next.js.
 
 ## Overview
 
@@ -52,6 +52,46 @@ PostgreSQL (WAL with wal2json v2)
        +---> Prometheus Metrics (:9091)
 ```
 
+## Architectural Decisions (As of February 15, 2026)
+
+- **FastAPI control plane over Django**: Legacy Django scaffolding was removed and all control-plane features live in `control/app/`.
+- **Centralized dedup in Replayer**: Workers do not maintain local dedup state; idempotency is enforced in `replayer/server.py`.
+- **At-least-once replay semantics**: Replayer uses `exists -> apply -> mark_processed` so failed applies are retried instead of being pre-marked as duplicates.
+- **Fail-fast job progression on unreplayable events**: Workers retry each event up to `MAX_EVENT_RETRIES` times after the initial attempt; if still failing, the job is marked `FAILED` without advancing checkpoint beyond the failed event.
+- **Dual replay source strategy**: Replay router serves recent/small windows from Redis and historical/large windows from Kafka.
+- **Source-pinned resume behavior**: Resumed jobs reuse their original `replay_source` to avoid cross-source checkpoint mismatches (for example Redis stream IDs interpreted as Kafka offsets).
+- **Per-partition Kafka checkpoints**: Kafka progress is stored in JSON (`checkpoint`) keyed by partition, while `last_processed_id` is retained as a fallback string checkpoint.
+- **Safe Kafka partition seek semantics**: On resume, uncheckpointed partitions seek to `start_ms`; if no offset exists at/after `start_ms`, they seek to partition end to avoid replaying out-of-window historical data.
+- **Lease-based worker ownership**: Job execution uses DB-backed leases plus renewal to prevent concurrent workers from processing the same job.
+- **Async I/O across services**: `aiokafka`, `redis.asyncio`, `grpc.aio`, and async SQLAlchemy are used to keep ingestion and replay non-blocking.
+- **JWT auth for REST and WebSocket**: API routes and WebSocket stream are token-authenticated to keep monitoring and control endpoints private.
+
+## Frontend Dashboard
+
+WalStream includes a modern web dashboard built with Next.js 14:
+
+```
+Frontend (Next.js 14 + TypeScript)
+       |
+       +---> /login          - JWT Authentication
+       +---> /                - Dashboard Overview
+       +---> /jobs            - Replay Job Management
+       +---> /jobs/new        - Create New Job
+       +---> /jobs/[id]       - Job Details & Actions
+       +---> /events          - Real-time Event Stream
+       +---> /metrics         - Prometheus Metrics Dashboard
+```
+
+### Frontend Tech Stack
+
+- **Framework**: Next.js 14 with App Router
+- **Language**: TypeScript
+- **UI Components**: shadcn/ui + Tailwind CSS
+- **State Management**: Zustand (auth, events)
+- **Server State**: TanStack Query (React Query)
+- **Charts**: Recharts
+- **Virtualization**: @tanstack/react-virtual
+
 ## Features
 
 - **Real-time Change Capture**: PostgreSQL logical replication via WAL streaming
@@ -64,6 +104,7 @@ PostgreSQL (WAL with wal2json v2)
 - **Prometheus Metrics**: Full observability for all components
 - **Async-Native**: aiokafka, redis.asyncio, grpc.aio for non-blocking I/O
 - **Docker Ready**: Complete docker-compose setup
+- **Modern Frontend**: Next.js 14 dashboard with real-time updates
 
 ## Quick Start
 
@@ -72,6 +113,7 @@ PostgreSQL (WAL with wal2json v2)
 - Docker & Docker Compose
 - Python 3.11+
 - uv (recommended) or pip
+- Node.js 18+ (for frontend development)
 
 ### Database Architecture
 
@@ -94,17 +136,50 @@ cd CDC-FastAPI
 cp .env.example .env
 ```
 
-### 2. Start All Services
+### 2. Start Infrastructure
 
 ```bash
-# Start infrastructure (PostgreSQL with WAL enabled, Redis, Kafka)
+# Start databases, Redis, and Kafka
 docker-compose up -d postgres postgres-control redis zookeeper kafka
 
-# Wait for services to be healthy
+# Wait until all infrastructure services are healthy
 docker-compose ps
+```
 
-# Start application services
-docker-compose up -d ingestor control replayer worker
+### 3. Run Database Migrations (Required Before First Start)
+
+The control plane verifies the database schema on startup and **will refuse to
+start** if migrations have not been applied. Run Alembic from inside the
+control image (which already includes the migration files):
+
+```bash
+# Build the control image once
+docker-compose build control
+
+# Apply migrations to the control-plane database
+docker-compose run --rm control alembic upgrade head
+
+# (Optional) Verify the current revision
+docker-compose run --rm control alembic current
+```
+
+Or, if you have Python + dependencies installed locally:
+
+```bash
+make migrate          # runs: cd control && alembic upgrade head
+make migrate-check    # shows current revision
+```
+
+> **Why migration-first?**  The control plane calls `check_db_revision()` at
+> startup and compares the database's Alembic head against the expected
+> revision compiled into the code. A mismatch raises `RuntimeError` and exits
+> immediately. This prevents the application from running against a stale
+> schema.
+
+### 4. Start Application Services
+
+```bash
+docker-compose up -d ingestor control replayer worker frontend
 ```
 
 The Docker setup automatically:
@@ -118,7 +193,7 @@ The Docker setup automatically:
 > RUN apt-get update && apt-get install -y postgresql-16-wal2json && rm -rf /var/lib/apt/lists/*
 > ```
 
-### 3. Verify Setup
+### 5. Verify Setup
 
 ```bash
 # Check all services are running
@@ -133,8 +208,9 @@ docker exec walstream-postgres psql -U postgres -c "SELECT rolname FROM pg_roles
 # Should show: repluser
 ```
 
-### 4. Access Services
+### 6. Access Services
 
+- **Frontend Dashboard**: http://localhost:3000
 - **API Docs**: http://localhost:8000/api/v1/docs
 - **Health Check**: http://localhost:8000/api/v1/health/live
 - **Metrics (Ingestor)**: http://localhost:9090/metrics
@@ -268,12 +344,26 @@ CREATE INDEX IF NOT EXISTS idx_processed_events_expires
     ON walstream_dedup.processed_events(expires_at);
 ```
 
-### 4. Run Alembic Migrations
+### 4. Run Alembic Migrations (Required Before First Start)
+
+The control plane will **fail fast** on startup if the database schema is
+behind the expected Alembic head revision. Always run migrations before
+starting the control service:
 
 ```bash
 cd control
 alembic upgrade head
 cd ..
+
+# Verify (optional)
+cd control && alembic current && cd ..
+```
+
+Or via Makefile:
+
+```bash
+make migrate          # runs: cd control && alembic upgrade head
+make migrate-check    # shows current DB revision
 ```
 
 ### 5. Start Redis and Kafka
@@ -319,6 +409,9 @@ python ingestor/ingestor.py
 
 # Terminal 3: Replayer
 python replayer/server.py
+
+# Terminal 4: Frontend (optional)
+cd frontend && npm install && npm run dev
 ```
 
 ---
@@ -438,7 +531,8 @@ curl -X POST http://localhost:8000/api/v1/jobs/{job_id}/cancel \
 ### WebSocket Events
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8000/api/v1/events/ws');
+const token = '<jwt>';
+const ws = new WebSocket(`ws://localhost:8000/api/v1/events/ws?token=${token}`);
 ws.onmessage = (event) => console.log(JSON.parse(event.data));
 ```
 
@@ -446,6 +540,28 @@ ws.onmessage = (event) => console.log(JSON.parse(event.data));
 
 ```
 CDC-FastAPI/
+├── frontend/                  # Next.js 14 web dashboard
+│   ├── src/
+│   │   ├── app/               # App Router pages
+│   │   │   ├── (auth)/        # Auth layout (login)
+│   │   │   ├── (dashboard)/   # Dashboard layout (protected)
+│   │   │   └── api/           # API routes (metrics proxy)
+│   │   ├── components/        # React components
+│   │   │   ├── ui/            # shadcn/ui components
+│   │   │   ├── layout/        # Sidebar, Header
+│   │   │   ├── auth/          # AuthGuard
+│   │   │   ├── errors/        # ErrorBoundary, ErrorFallback
+│   │   │   ├── jobs/          # Job management
+│   │   │   ├── events/        # Event stream
+│   │   │   └── metrics/       # Charts & gauges
+│   │   ├── hooks/             # Custom React hooks
+│   │   ├── stores/            # Zustand stores (auth, events)
+│   │   ├── lib/               # API client, utilities
+│   │   ├── types/             # TypeScript types
+│   │   └── middleware.ts       # Auth route protection
+│   ├── Dockerfile             # Multi-stage Docker build
+│   └── package.json
+│
 ├── walstream-proto/           # Protobuf definitions & Pydantic models
 │   ├── proto/v1/              # .proto files (ChangeRecord, ReplayRequest, etc.)
 │   ├── walstream_proto/       # Python package
@@ -475,7 +591,7 @@ CDC-FastAPI/
 │   │   │   └── dedup_state.py # Deduplication state
 │   │   ├── services/          # Business logic
 │   │   │   ├── replay_router.py  # Redis/Kafka source routing
-│   │   │   └── dedup_store.py    # Deduplication store
+│   │   │   └── dedup_store.py    # Legacy dedup utility (not in active replay path)
 │   │   └── workers/           # Background workers
 │   │       ├── job_worker.py  # Durable job execution
 │   │       └── manager.py     # Worker pool manager
@@ -484,10 +600,6 @@ CDC-FastAPI/
 │
 ├── replayer/                  # gRPC replay service
 │   └── server.py              # Replayer with centralized dedup
-│
-├── worker/                    # Kafka consumer utilities
-│   ├── main.py                # Simple Redis worker
-│   └── consumer_group.py      # Parallel Kafka consumers
 │
 ├── db/                        # Database initialization
 │   └── init.sql               # PostgreSQL setup script
@@ -515,7 +627,18 @@ See `.env.example` for all configuration options. Key settings:
 | `REPLAYER_PORT` | gRPC replayer port | `50051` |
 | `JOB_WORKER_COUNT` | Parallel job workers | `4` |
 | `JOB_LEASE_DURATION_SECONDS` | Worker lease TTL | `300` |
+| `MAX_EVENT_RETRIES` | Retries per event (after initial attempt) before job fails | `3` |
 | `SECRET_KEY` | JWT signing key | (change in production) |
+
+### Frontend Configuration (frontend/.env.local)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NEXT_PUBLIC_API_URL` | Backend API URL | `http://localhost:8000` |
+| `NEXT_PUBLIC_WS_URL` | WebSocket URL | `ws://localhost:8000` |
+| `PROMETHEUS_INGESTOR_URL` | Ingestor metrics | `http://localhost:9090/metrics` |
+| `PROMETHEUS_CONTROL_URL` | Control metrics | `http://localhost:9091/metrics` |
+| `PROMETHEUS_REPLAYER_URL` | Replayer metrics | `http://localhost:9092/metrics` |
 
 ## Delivery Semantics
 
@@ -523,8 +646,12 @@ See `.env.example` for all configuration options. Key settings:
 
 1. Events may be delivered multiple times due to retries or worker restarts
 2. Replayer enforces centralized deduplication using `(lsn, table, pk_hash)` key
-3. Dedup state stored in PostgreSQL with 7-day TTL
-4. Workers trust Replayer for dedup - no local dedup to avoid race conditions
+3. Replayer marks dedup state only after successful apply (`exists -> apply -> mark_processed`)
+4. Dedup state stored in PostgreSQL with 7-day TTL
+5. Workers trust Replayer for dedup - no local dedup to avoid race conditions
+6. Worker retries each failed event up to `MAX_EVENT_RETRIES` times after the initial attempt, then fails the job without moving checkpoint past that event
+7. Kafka resume checkpoints are tracked per partition in JSON (`checkpoint`) and serialized back into the replay source on resume
+8. Resumed jobs reuse their stored replay source; Kafka partitions without a resume offset seek by timestamp, then to end if no in-range offset exists
 
 **Idempotent Producer**:
 
@@ -554,6 +681,22 @@ docker-compose --profile monitoring up -d
 | `walstream_ingest_latency_seconds` | WAL-to-publish latency |
 | `walstream_replay_latency_seconds` | Per-event replay latency |
 
+### SLO Targets & Alert Thresholds
+
+| SLO | Target | Alert Threshold | Alert Name | Severity |
+|-----|--------|-----------------|------------|----------|
+| Ingest availability | Events flowing continuously | 0 events/5min | `IngestorStalled` | critical |
+| Ingest latency (p99) | < 1s WAL-to-publish | p99 > 1s for 5min | `HighIngestLatency` | warning |
+| Replay availability | Events replayed while jobs are active | 0 events/10min with queued/running jobs | `ReplayerStalled` | critical |
+| Replay success rate | > 95% | Failure rate > 5% for 5min | `ReplayerHighFailureRate` | warning |
+| Replay latency (p99) | < 500ms | p99 > 500ms for 5min | `HighReplayLatency` | warning |
+| Redis buffer headroom | < 90% of MAXLEN | > 90,000 entries for 2min | `RedisStreamNearCapacity` | warning |
+| Kafka consumer lag | < 10,000 messages | > 10,000 for 5min | `KafkaConsumerLagCritical` | critical |
+| Job lease integrity | No orphaned leases | Running job with expired lease for 1min | `JobLeaseExpiredWithRunningState` | warning |
+| DB schema alignment | Alembic head matches code | Checked at startup; mismatch = fail-fast | `ControlPlaneDown` (startup failure symptom) | critical |
+
+Alert rules are defined in `monitoring/alertmanager/rules/walstream.yml`. Alertmanager routes critical alerts to PagerDuty and warning alerts to Slack (configure in `monitoring/alertmanager/alertmanager.yml`).
+
 ## Development
 
 ```bash
@@ -580,6 +723,197 @@ mypy control/ ingestor/ replayer/
 
 This project follows the [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html).
 See `google_python_style_guide.md` for a local reference.
+
+---
+
+## Implementation Checklist
+
+> Items marked `[x]` are complete; `[ ]` items remain.
+
+---
+
+### Backend — Phase 0: Critical Fixes
+
+- [x] `db/init.sql` — fixed syntax, idempotent user creation, includes dedup schema
+- [x] Removed legacy standalone `worker/` utilities (superseded by `control/app/workers/`)
+- [x] Django replaced with FastAPI control plane; legacy Django scaffolding removed
+
+### Backend — Phase 1: Protobuf Packaging & Versioning
+
+- [x] `walstream-proto/` package with `proto/v1/` directory structure
+- [x] `walstream.proto` with reserved field ranges and versioning strategy
+- [x] **Generated pb2 files** — `walstream_pb2.py` and `walstream_pb2_grpc.py` are present under `walstream-proto/walstream_proto/v1/`
+- [x] Pydantic models (`walstream_proto/models.py`) with `from_protobuf` / `to_protobuf` / `idempotency_key`
+- [x] Compatibility tests (`walstream-proto/tests/test_compatibility.py`)
+
+### Backend — Phase 2: Ingestor Enhancement
+
+- [x] Full `wal2json` format-version 2 parsing (`parse_wal2json_v2`) with operation/old/new extraction
+- [x] Redis `XADD` with `MAXLEN` trimming (100K, approximate)
+- [x] Prometheus metrics (7 metrics: ingested, published, errors, lag, latency)
+- [x] Signal handling (SIGTERM/SIGINT) with graceful shutdown and auto-restart loop
+- [x] Kafka idempotent producer (`enable_idempotence=True`)
+
+### Backend — Phase 3: FastAPI Control Plane
+
+- [x] `control/app/config.py` — Pydantic Settings with all env vars
+- [x] `control/app/database.py` — async SQLAlchemy engine + session factory
+- [x] `control/app/models/` — User, ReplayJob (with lease fields), ProcessedEvent (dedup)
+- [x] `control/app/api/v1/jobs.py` — full CRUD + start/pause/resume/cancel endpoints
+- [x] `control/app/api/v1/auth.py` — JWT token, register, /me
+- [x] `control/app/api/v1/events.py` — WebSocket live streaming, /stream/stats, /recent
+- [x] `control/app/api/v1/health.py` — liveness + readiness probes with component checks
+- [x] `control/app/services/replay_router.py` — Redis/Kafka source selection with source-pinned resume and safe partition seek behavior
+- [x] `control/app/services/dedup_store.py` — retained legacy utility module (active dedup is centralized in Replayer)
+- [x] `control/app/workers/job_worker.py` — lease-based acquisition, renewal, fail-fast replay, and per-partition checkpoint/resume
+- [x] `control/app/workers/manager.py` — worker pool manager
+- [x] Alembic migrations directory scaffold
+- [x] Alembic revision files for controlled schema evolution (3 migrations: initial, RBAC+audit, API keys)
+- [x] Remove production startup `create_all` path; use migration-only schema bootstrap
+- [x] Add startup DB revision guard (fail fast when DB is behind expected Alembic head)
+- [x] Pause/cancel API transitions must clear `worker_id` + `lease_expires_at` atomically
+- [x] Separate read/write DB session policy (no implicit commit on read-only request paths)
+- [x] Service-layer transaction boundaries for multi-step job state transitions
+
+### Backend — Phase 4: gRPC Replayer
+
+- [x] `replayer/server.py` — centralized dedup enforcement (`exists -> apply -> mark_processed`)
+- [x] `PostgreSQLTargetApplier` — INSERT/UPDATE/DELETE/TRUNCATE with ON CONFLICT handling
+- [x] `LoggingTargetApplier` — dry-run testing
+- [x] Health RPC endpoint
+- [x] Prometheus metrics (replayed, duplicates, failed, latency)
+- [x] Automatic dedup entry cleanup task
+
+### Backend — Phase 5: Security & Authentication
+
+- [x] JWT authentication (OAuth2PasswordBearer, token generation/validation)
+- [x] User model with `is_active`, `is_superuser` flags
+- [x] CORS middleware configured (origins via settings)
+- [x] Middleware stale-token handling with deterministic recovery path (`AuthContextMiddleware` + `X-Token-Expired` header)
+- [x] Align middleware/API auth validation behavior (`AuthContextMiddleware` feeds identity to audit; deps distinguish expired vs missing tokens)
+- [x] **Role-based authorization (RBAC)** — admin/operator/viewer hierarchy with `require_role` dependency
+- [x] **Audit logging** — `AuditLog` model and middleware for mutation tracking
+- [x] **Rate limiting middleware**
+- [x] **API key support** for service-to-service auth
+
+### Backend — Phase 6: Observability & Alerting
+
+- [x] Prometheus metrics on all services (ingestor :9090, control :9091, replayer :9092)
+- [x] `monitoring/prometheus.yml` scrape config
+- [x] Prometheus + Grafana in docker-compose (monitoring profile)
+- [x] **Alerting rules** (`monitoring/alertmanager/rules/walstream.yml`) — IngestorStalled, RedisStreamNearCapacity, ReplayerStalled, KafkaConsumerLagCritical, etc.
+- [x] Alerts for replay lease/state inconsistency invariants and control-plane availability
+- [x] **Alertmanager configuration** — Slack/PagerDuty routing, severity grouping
+- [x] **Grafana dashboards** — provisioned JSON dashboards for all services
+- [x] **SLO documentation** — alert thresholds, SLO targets, runbook URLs
+
+### Backend — Phase 7: Testing
+
+- [x] `walstream-proto/tests/test_compatibility.py` — proto serialization + Pydantic tests
+- [x] `control/tests/test_health.py` — basic health endpoint tests
+- [x] **Unit tests** — `test_parse_wal2json_v2`, `test_idempotency_key`, `test_replay_router_source_selection`, `test_rbac`, `test_middleware`
+- [x] **Integration tests** — `test_job_lifecycle` (CRUD + full state machine through API), `test_auth` (endpoint auth enforcement)
+- [x] **Failure mode tests** — bounded retries, retry exhaustion, checkpoint non-advancement on failure (`test_delivery_semantics`)
+- [x] **Delivery semantics tests** — replayer dedup contract (exists→apply→mark), duplicate skipped, failed apply not marked
+- [x] Job lifecycle invariant tests — pause/cancel transitions clear lease ownership (`test_job_service`)
+- [x] Migration strategy tests — startup fails when DB revision is behind expected Alembic head (`test_migration_guard`)
+- [x] Replay resume matrix tests — Redis checkpoint, Kafka single/multi-partition checkpoint, sparse partition checkpoint (`test_replay_resume`)
+- [x] Kafka range-boundary tests — partitions with no in-range timestamp offset seek to end (`test_replay_resume`)
+- [x] Auth consistency tests — stale token + expired token returns 401 with `X-Token-Expired`, health is public (`test_auth`)
+- [ ] **E2E tests** — full pipeline: INSERT → ingest → replay → verify in target
+
+### Backend — Phase 8: Docker & DevEx
+
+- [x] Dockerfiles for all services (ingestor, control, replayer, frontend)
+- [x] `docker-compose.yml` — complete stack with health checks, volumes, networking
+- [x] **Makefile** — `make up`, `make test`, `make proto`, `make lint`, `make migrate`, `make migrate-check`, `make test-delivery`
+- [x] **Clean up legacy Django files** — removed `control/walstream/`, `control/replay/`, and `control/manage.py`
+- [x] **.env.example** — root-level env template for easy onboarding
+- [x] Migration-first local/dev startup docs and scripts (no runtime schema auto-create in production path)
+
+---
+
+### Frontend — Phase 1: Foundation
+
+- [x] Next.js 14 project with TypeScript, Tailwind CSS, shadcn/ui (19 components)
+- [x] API client (`lib/api/client.ts`) with JWT interceptors and 401 redirect
+- [x] Auth store (`stores/authStore.ts`) with Zustand persist + cookie sync
+- [x] Login page with Zod validation and react-hook-form
+- [x] Auth middleware (`middleware.ts`) + client-side `AuthGuard` component
+- [x] Dashboard layout with Sidebar and Header
+- [x] React Query provider (`lib/providers.tsx`)
+
+### Frontend — Phase 2: Job Management
+
+- [x] Job TypeScript types (`types/job.ts`) with all plan fields + extras
+- [x] Jobs API functions (`lib/api/jobs.ts`) — full CRUD + lifecycle actions
+- [x] `useJobs` React Query hooks with dynamic polling intervals
+- [x] `JobsTable` — sortable, filterable, paginated with inline actions
+- [x] `JobStatusBadge` — colored status indicators
+- [x] `JobActions` — start/pause/resume/cancel/delete with confirmation dialogs
+- [x] `JobDetailPanel` — full info, progress, timeline, stats grid
+- [x] `JobCreateForm` — Zod schema, time range presets, speed factor
+
+### Frontend — Phase 3: Real-time Events
+
+- [x] `useWebSocket` hook with auto-reconnect, status tracking, exponential backoff
+- [x] Event store (`stores/eventStore.ts`) — Zustand, 1000-event FIFO, filtering, pause
+- [x] `EventStream` — virtualized list with `@tanstack/react-virtual`
+- [x] `EventCard` — operation-colored event display
+- [x] `EventFilters` — table name, operation type, search query
+- [x] `EventDetailModal` — full payload view with tabs
+- [x] `ConnectionStatus` — WebSocket status indicator
+
+### Frontend — Phase 4: Metrics Dashboard
+
+- [x] Prometheus text parser (`lib/utils/prometheus-parser.ts`) with histogram percentiles
+- [x] Metrics API route (`app/api/metrics/route.ts`) — proxies to 3 Prometheus endpoints
+- [x] `useMetrics` hooks — raw metrics, snapshot, history with rate calculations
+- [x] `EventsLineChart` — ingested vs replayed over time
+- [x] `OperationsBarChart` — horizontal bars by operation type
+- [x] `LatencyChart` — p50/p90/p99 bar chart
+- [x] `ThroughputGauge` — SVG gauge with events/sec
+- [x] `ReplayStatusChart`, `RedisStreamCard`, `StatsCard` — extra components
+- [x] Auto-refresh via React Query `refetchInterval`
+
+### Frontend — Phase 5: Polish & Integration
+
+- [x] Dashboard overview page with real metrics, health status, recent jobs
+- [x] Toast notifications (shadcn/ui Toaster)
+- [x] Error boundaries (`ErrorBoundary`, `ErrorFallback`, per-route `error.tsx`)
+- [x] `not-found.tsx` — custom 404 page
+- [x] Docker config (multi-stage `Dockerfile`, `.dockerignore`)
+- [ ] Stale-cookie session handling UX alignment between middleware guards and API 401 handling
+- [ ] Degraded readiness/503 UI states for dashboard health cards and overview widgets
+- [ ] **Dark/light mode toggle** (`ThemeToggle.tsx`) — Tailwind dark mode is configured but no toggle UI
+- [ ] **Mobile responsive sidebar** — no hamburger menu for small screens
+- [ ] **Extracted dashboard components** — `OverviewCards`, `RecentJobs`, `HealthStatus`, `QuickActions` are inline in `page.tsx`, not reusable components
+- [ ] **UI store** (`stores/uiStore.ts`) — sidebar collapse, theme state
+- [ ] **Utility files** — `lib/utils/formatters.ts`, `lib/constants.ts`
+- [ ] **Frontend `.env.example`** — environment template for developers
+- [ ] **`useDebounce` hook** — for search input debouncing
+- [ ] **Dynamic imports** for chart components (code splitting)
+
+### Frontend — Testing
+
+- [ ] **Vitest + Testing Library** — component unit tests
+- [ ] **Hook tests** — `renderHook` for useJobs, useWebSocket, useMetrics
+- [ ] **MSW integration tests** — API client with mock service worker
+- [ ] Middleware/auth tests — stale cookie + invalid token redirect behavior
+- [ ] Health contract tests — flat keys (`postgres/redis/kafka`) + `components` map compatibility
+- [ ] **Playwright E2E** (optional) — login flow, job lifecycle, event filtering
+
+---
+
+### Not In Original Plan (Bonus Features Completed)
+
+- [x] `useHealth` hook and health API client
+- [x] `useEvents` hook for REST event fetching
+- [x] Auth cookie sync for server-side middleware
+- [x] `RedisStreamCard` — Redis buffer visualization
+- [x] `ReplayStatusChart` — replay/duplicate/failed breakdown chart
+- [x] `StatsCard` — generic reusable metrics card
+- [x] Per-route error pages (`app/error.tsx`, `app/(dashboard)/error.tsx`)
 
 ## License
 

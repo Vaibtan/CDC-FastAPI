@@ -1,0 +1,164 @@
+# Prometheus alerting rules for WalStream CDC platform.
+#
+# These rules monitor the health and performance of the ingestor,
+# replayer, Redis streams, Kafka consumers, and job lifecycle.
+
+groups:
+  - name: walstream.ingestor
+    rules:
+      - alert: IngestorStalled
+        expr: rate(walstream_events_ingested_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: ingestor
+        annotations:
+          summary: "WalStream ingestor has stalled"
+          description: >-
+            The ingestor on {{ $labels.instance }} has not ingested any
+            events for the last 5 minutes. WAL consumption may have
+            stopped or the upstream PostgreSQL connection could be down.
+          runbook_url: "https://runbooks.internal/walstream/ingestor-stalled"
+
+      - alert: HighIngestLatency
+        expr: histogram_quantile(0.99, rate(walstream_ingest_latency_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: ingestor
+        annotations:
+          summary: "WalStream p99 ingest latency exceeds 1 second"
+          description: >-
+            The 99th-percentile ingest latency on {{ $labels.instance }}
+            is {{ $value | humanizeDuration }}, which exceeds the 1-second
+            threshold. Check PostgreSQL replication slot health, network
+            latency, and Redis write performance.
+          runbook_url: "https://runbooks.internal/walstream/high-ingest-latency"
+
+  - name: walstream.redis
+    rules:
+      - alert: RedisStreamNearCapacity
+        expr: walstream_redis_stream_length > 90000
+        for: 2m
+        labels:
+          severity: warning
+          component: redis
+        annotations:
+          summary: "Redis stream approaching maximum capacity"
+          description: >-
+            The Redis stream {{ $labels.stream }} on {{ $labels.instance }}
+            has {{ $value }} entries, which is above the 90,000-entry
+            warning threshold (max capacity is 100,000). Events will be
+            dropped or blocked once the cap is reached. Scale out
+            replayers or investigate downstream backpressure.
+          runbook_url: "https://runbooks.internal/walstream/redis-stream-capacity"
+
+  - name: walstream.replayer
+    rules:
+      - alert: ReplayerStalled
+        expr: >-
+          rate(walstream_events_replayed_total[10m]) == 0
+          and
+          (walstream_jobs_active{state="queued"} > 0 or walstream_jobs_active{state="running"} > 0)
+        for: 10m
+        labels:
+          severity: critical
+          component: replayer
+        annotations:
+          summary: "WalStream replayer has stalled while jobs are pending"
+          description: >-
+            The replayer on {{ $labels.instance }} has not replayed any
+            events for the last 10 minutes, yet there are jobs in a
+            queued or running state. The replay loop may be stuck or the
+            downstream target may be unreachable.
+          runbook_url: "https://runbooks.internal/walstream/replayer-stalled"
+
+      - alert: ReplayerHighFailureRate
+        expr: >-
+          (
+            rate(walstream_events_failed_total[5m])
+            /
+            clamp_min(
+              rate(walstream_events_replayed_total[5m]) + rate(walstream_events_failed_total[5m]),
+              1
+            )
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: replayer
+        annotations:
+          summary: "WalStream replayer failure rate exceeds 5%"
+          description: >-
+            More than 5% of replay attempts on {{ $labels.instance }}
+            have failed over the last 5 minutes
+            (current failure rate: {{ $value | humanizePercentage }}).
+            Inspect replayer logs for error details and verify target
+            database connectivity.
+          runbook_url: "https://runbooks.internal/walstream/replayer-high-failure-rate"
+
+      - alert: HighReplayLatency
+        expr: histogram_quantile(0.99, rate(walstream_replay_latency_seconds_bucket[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: replayer
+        annotations:
+          summary: "WalStream p99 replay latency exceeds 500ms"
+          description: >-
+            The 99th-percentile replay latency on {{ $labels.instance }}
+            is {{ $value | humanizeDuration }}, which exceeds the
+            500-millisecond threshold. Check target database performance,
+            network latency, and batch sizes.
+          runbook_url: "https://runbooks.internal/walstream/high-replay-latency"
+
+  - name: walstream.kafka
+    rules:
+      - alert: KafkaConsumerLagCritical
+        expr: walstream_kafka_consumer_lag > 10000
+        for: 5m
+        labels:
+          severity: critical
+          component: kafka
+        annotations:
+          summary: "Kafka consumer lag is critically high"
+          description: >-
+            Consumer group {{ $labels.consumer_group }} on topic
+            {{ $labels.topic }} partition {{ $labels.partition }} has a
+            lag of {{ $value }} messages, exceeding the 10,000-message
+            threshold for 5 minutes. The ingestor or replayer may not be
+            keeping up with the event stream.
+          runbook_url: "https://runbooks.internal/walstream/kafka-consumer-lag"
+
+  - name: walstream.jobs
+    rules:
+      - alert: JobLeaseExpiredWithRunningState
+        expr: walstream_job_lease_expired{state="running"} > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: jobs
+        annotations:
+          summary: "Job in RUNNING state has an expired lease"
+          description: >-
+            {{ $value }} job(s) on {{ $labels.instance }} are marked as
+            RUNNING but their leases have expired. These jobs may be
+            orphaned due to a worker crash. The control plane should
+            reclaim or fail them so they can be retried.
+          runbook_url: "https://runbooks.internal/walstream/job-lease-expired"
+
+  - name: walstream.control
+    rules:
+      - alert: ControlPlaneDown
+        expr: up{job="control"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: control
+        annotations:
+          summary: "WalStream control plane is down"
+          description: >-
+            The control-plane API has been unreachable for at least 2 minutes.
+            Check deployment health, logs, and startup failures (including
+            migration/revision guard failures).
+          runbook_url: "https://runbooks.internal/walstream/control-plane-down"

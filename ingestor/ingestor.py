@@ -327,13 +327,15 @@ class Ingestor:
         EVENTS_PUBLISHED_KAFKA.inc()
 
     def process_message(self, msg) -> bool:
-        """Process a single replication message."""
+        """Process a single replication message.
+
+        WAL feedback is sent AFTER successful dual-write to Redis and Kafka.
+        This ensures at-least-once delivery: if the process crashes before
+        feedback, PostgreSQL will re-send the same WAL data on reconnect.
+        """
         start_time = time.time()
 
         try:
-            # Acknowledge the message position
-            msg.cursor.send_feedback(flush_lsn=msg.data_start)
-
             # Parse WAL payload
             payload = json.loads(msg.payload)
             records = parse_wal2json_v2(payload, msg.data_start)
@@ -354,6 +356,11 @@ class Ingestor:
                     record.lsn,
                     redis_id,
                 )
+
+            # Acknowledge AFTER successful writes to prevent data loss.
+            # If we crash before this line, PostgreSQL will redeliver from
+            # this LSN on the next connection.
+            msg.cursor.send_feedback(flush_lsn=msg.data_start)
 
             INGEST_LATENCY.observe(time.time() - start_time)
             return True

@@ -17,10 +17,15 @@ from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
 
 from app.config import get_settings
-from app.database import init_db, close_db
+from app.database import check_db_revision, close_db
 from app.api.v1.router import api_router
+from app.metrics import JobMetricsPublisher
+from app.middleware.auth_context import AuthContextMiddleware
+from app.middleware.audit import AuditMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
 
 settings = get_settings()
+job_metrics_publisher = JobMetricsPublisher(settings.job_metrics_refresh_interval_seconds)
 
 # Configure logging
 logging.basicConfig(
@@ -35,13 +40,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     """Application lifespan manager for startup/shutdown."""
     # Startup
     logger.info("Starting WalStream Control Plane...")
-    await init_db()
-    logger.info("Database initialized")
+    await check_db_revision()
+    logger.info("Database revision verified")
+    await job_metrics_publisher.start()
+    logger.info("Background job metrics publisher started")
 
     yield
 
     # Shutdown
     logger.info("Shutting down WalStream Control Plane...")
+    await job_metrics_publisher.stop()
     await close_db()
     logger.info("Shutdown complete")
 
@@ -64,6 +72,20 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# Auth context — decode JWT early so audit and other middleware can see
+# the caller identity; also flags expired tokens via X-Token-Expired header.
+app.add_middleware(AuthContextMiddleware)
+
+# Audit logging for mutations (POST/PATCH/PUT/DELETE)
+app.add_middleware(AuditMiddleware)
+
+# Per-IP rate limiting (token-bucket, backed by Redis)
+app.add_middleware(
+    RateLimitMiddleware,
+    capacity=settings.rate_limit_capacity,
+    refill_rate=settings.rate_limit_refill_rate,
 )
 
 

@@ -7,8 +7,11 @@ from typing import AsyncGenerator, Optional
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 import redis.asyncio as aioredis
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings, Settings
+from app.database import get_read_db
+from app.api.deps import CurrentUser, ws_authenticate
 from walstream_proto.v1 import ChangeRecord
 from walstream_proto.models import ChangeRecordModel, EventStreamMessage
 
@@ -18,6 +21,7 @@ router = APIRouter()
 
 @router.get("/stream/stats")
 async def get_stream_stats(
+    current_user: CurrentUser,
     settings: Settings = Depends(lambda: get_settings()),
 ) -> dict:
     """
@@ -59,6 +63,7 @@ async def get_stream_stats(
 
 @router.get("/recent")
 async def get_recent_events(
+    current_user: CurrentUser,
     count: int = Query(10, ge=1, le=100),
     table_filter: Optional[str] = Query(None),
     settings: Settings = Depends(lambda: get_settings()),
@@ -120,13 +125,21 @@ async def get_recent_events(
 @router.websocket("/ws")
 async def websocket_event_stream(
     websocket: WebSocket,
+    db: AsyncSession = Depends(get_read_db),
     settings: Settings = Depends(lambda: get_settings()),
 ) -> None:
     """
     WebSocket endpoint for real-time event streaming.
 
     Clients can subscribe to live CDC events from the Redis stream.
+    Requires ?token=<jwt> query parameter for authentication.
     """
+    # Authenticate before accepting the connection
+    try:
+        user = await ws_authenticate(websocket, db)
+    except Exception:
+        return
+
     await websocket.accept()
     logger.info("WebSocket client connected")
 

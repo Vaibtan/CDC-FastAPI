@@ -6,16 +6,13 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
-
 from aiokafka import AIOKafkaConsumer, TopicPartition
 import redis.asyncio as aioredis
-
 from app.config import get_settings
 from walstream_proto.v1 import ChangeRecord
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class ReplayEvent:
@@ -175,6 +172,24 @@ class KafkaReplaySource(ReplaySource):
             logger.warning("Error counting Kafka events: %s", e)
             return 0
 
+    @staticmethod
+    def _parse_checkpoint(checkpoint: str) -> dict[int, int]:
+        """Parse a Kafka checkpoint string into {partition: offset} map.
+
+        Supports two formats:
+        - JSON map: '{"0": 123, "1": 456}'
+        - Single partition:offset: '0:123'
+        """
+        try:
+            parsed = json.loads(checkpoint)
+            return {int(k): int(v) for k, v in parsed.items()}
+        except (json.JSONDecodeError, AttributeError):
+            # Fallback: "partition:offset" format
+            if ":" in checkpoint:
+                parts = checkpoint.split(":", 1)
+                return {int(parts[0]): int(parts[1])}
+            raise ValueError(f"Unrecognized checkpoint format: {checkpoint}")
+
     async def stream_events(
         self,
         start_ms: int,
@@ -192,36 +207,96 @@ class KafkaReplaySource(ReplaySource):
             partitions = [TopicPartition(self.topic, p) for p in partitions_info]
             consumer.assign(partitions)
 
-            # Seek to checkpoint or timestamp
             if checkpoint:
-                # Checkpoint format: {"0": 123, "1": 456}
-                offsets = json.loads(checkpoint)
-                for p_str, offset in offsets.items():
-                    tp = TopicPartition(self.topic, int(p_str))
-                    consumer.seek(tp, offset + 1)
+                offsets = self._parse_checkpoint(checkpoint)
+
+                # Seek checkpointed partitions past their saved offset
+                for partition, offset in offsets.items():
+                    tp = TopicPartition(self.topic, partition)
+                    if tp in partitions:
+                        consumer.seek(tp, offset + 1)
+
+                # Seek remaining (non-checkpointed) partitions to start_ms
+                uncheckpointed = [
+                    tp for tp in partitions if tp.partition not in offsets
+                ]
+                if uncheckpointed:
+                    ts_map = {tp: start_ms for tp in uncheckpointed}
+                    ts_offsets = await consumer.offsets_for_times(ts_map)
+                    for tp, offset_and_ts in ts_offsets.items():
+                        if offset_and_ts:
+                            consumer.seek(tp, offset_and_ts.offset)
+                        else:
+                            # No offset >= start_ms for this partition, so there are
+                            # no records in-range. Move to end to avoid replaying old data.
+                            end_offsets = await consumer.end_offsets([tp])
+                            consumer.seek(tp, end_offsets[tp])
             else:
-                # Seek to start timestamp
+                # No checkpoint — seek all partitions to start timestamp
                 timestamps = {tp: start_ms for tp in partitions}
                 offsets = await consumer.offsets_for_times(timestamps)
                 for tp, offset_and_ts in offsets.items():
                     if offset_and_ts:
                         consumer.seek(tp, offset_and_ts.offset)
+                    else:
+                        # No offset >= start_ms for this partition, so there are
+                        # no records in-range. Move to end to avoid replaying old data.
+                        end_offsets = await consumer.end_offsets([tp])
+                        consumer.seek(tp, end_offsets[tp])
 
-            # Async iteration - properly yields to event loop
+            # Snapshot high-water marks at replay start so bounded replays can
+            # terminate even if producers keep writing to the topic.
+            end_offsets = await consumer.end_offsets(partitions)
+            if not isinstance(end_offsets, dict):
+                end_offsets = {}
+
+            completed_partitions: set[int] = set()
+
+            async def mark_completed_if_at_end(tp: TopicPartition) -> None:
+                partition_end = end_offsets.get(tp)
+                if not isinstance(partition_end, int):
+                    return
+                try:
+                    position = await consumer.position(tp)
+                except Exception:
+                    return
+                if isinstance(position, int) and position >= partition_end:
+                    completed_partitions.add(tp.partition)
+
+            # Partitions with no records in-range may already be at end.
+            for tp in partitions:
+                await mark_completed_if_at_end(tp)
+
+            if len(completed_partitions) == len(partitions):
+                return
+
+            # Async iteration - properly yields to event loop.
+            # Do NOT break on the first out-of-range message, because Kafka is
+            # ordered per-partition (not globally by timestamp).
             async for message in consumer:
-                if message.timestamp > end_ms:
+                tp = TopicPartition(self.topic, message.partition)
+
+                if message.partition in completed_partitions:
+                    continue
+
+                if message.timestamp is not None and message.timestamp > end_ms:
+                    completed_partitions.add(message.partition)
+                else:
+                    record = ChangeRecord()
+                    record.ParseFromString(message.value)
+
+                    yield ReplayEvent(
+                        message_id=f"{message.partition}:{message.offset}",
+                        payload=message.value,
+                        commit_time_ms=record.commit_time,
+                        table=record.table,
+                        operation=record.operation,
+                    )
+
+                await mark_completed_if_at_end(tp)
+
+                if len(completed_partitions) == len(partitions):
                     break
-
-                record = ChangeRecord()
-                record.ParseFromString(message.value)
-
-                yield ReplayEvent(
-                    message_id=f"{message.partition}:{message.offset}",
-                    payload=message.value,
-                    commit_time_ms=record.commit_time,
-                    table=record.table,
-                    operation=record.operation,
-                )
 
         except Exception as e:
             logger.error("Error streaming Kafka events: %s", e)
@@ -245,6 +320,17 @@ class ReplaySourceRouter:
         self.redis_source = RedisReplaySource(redis_client)
         self.kafka_source = kafka_source
         self.threshold_ms = settings.redis_replay_threshold_ms
+
+    def get_source_by_name(self, name: str) -> ReplaySource:
+        """Return the source matching a previously-stored replay_source name.
+
+        Used on job resume to avoid cross-source checkpoint confusion.
+        """
+        if name == "redis":
+            return self.redis_source
+        if name == "kafka":
+            return self.kafka_source
+        raise ValueError(f"Unknown replay source: {name}")
 
     def get_source(self, start_time_ms: int, end_time_ms: int) -> ReplaySource:
         """
