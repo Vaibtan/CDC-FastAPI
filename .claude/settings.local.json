@@ -20,7 +20,20 @@
       "Bash(.venv/Scripts/python.exe -m pip:*)",
       "Bash(.venv/Scripts/python.exe:*)",
       "Bash(where:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "mcp__excalidraw__read_diagram_guide",
+      "mcp__excalidraw__clear_canvas",
+      "mcp__excalidraw__batch_create_elements",
+      "mcp__excalidraw__set_viewport",
+      "mcp__excalidraw__get_canvas_screenshot",
+      "mcp__excalidraw__update_element",
+      "mcp__excalidraw__export_scene",
+      "mcp__excalidraw__export_to_image",
+      "mcp__excalidraw__delete_element",
+      "mcp__excalidraw__describe_scene",
+      "mcp__excalidraw__create_element",
+      "mcp__excalidraw__query_elements",
+      "mcp__excalidraw__import_scene"
     ]
   },
   "enableAllProjectMcpServers": true,

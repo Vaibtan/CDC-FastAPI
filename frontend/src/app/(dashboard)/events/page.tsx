@@ -39,7 +39,7 @@ export default function EventsPage() {
             <ConnectionStatus status={status} reconnectAttempts={reconnectAttempts} />
             {!statsLoading && stats && (
               <div className="text-sm text-muted-foreground">
-                Stream length: <span className="font-mono">{stats.stream_length.toLocaleString()}</span>
+                Stream length: <span className="font-mono">{stats.length.toLocaleString()}</span>
               </div>
             )}
           </div>

@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { useDebounce } from '@/hooks/useDebounce';
 
 interface EventFiltersProps {
   tables: string[];
@@ -35,6 +37,23 @@ export function EventFilters({
   onSearchChange,
   onReset,
 }: EventFiltersProps) {
+  const [localSearch, setLocalSearch] = useState(searchQuery);
+  const debouncedSearch = useDebounce(localSearch, 300);
+
+  // Sync debounced value to parent
+  useEffect(() => {
+    if (debouncedSearch !== searchQuery) {
+      onSearchChange(debouncedSearch);
+    }
+  }, [debouncedSearch, searchQuery, onSearchChange]);
+
+  // Keep local input in sync with external filter state changes (e.g. reset).
+  useEffect(() => {
+    if (searchQuery !== localSearch) {
+      setLocalSearch(searchQuery);
+    }
+  }, [searchQuery, localSearch]);
+
   const hasFilters =
     selectedTables.length > 0 || selectedOperations.length > 0 || searchQuery.length > 0;
 
@@ -66,8 +85,8 @@ export function EventFilters({
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             placeholder="Search events..."
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
+            value={localSearch}
+            onChange={(e) => setLocalSearch(e.target.value)}
             className="pl-9"
           />
         </div>

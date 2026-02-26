@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import type { CDCEvent } from '@/types/event';
-
-const MAX_EVENTS = 1000;
+import { MAX_EVENTS } from '@/lib/constants';
 
 interface EventFilters {
   tables: string[];

@@ -1,12 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as jobsApi from '@/lib/api/jobs';
 import type { ReplayJob, ReplayJobCreate, JobStatus } from '@/types/job';
+import { JOBS_POLL_INTERVAL, JOBS_RUNNING_POLL_INTERVAL } from '@/lib/constants';
 
 export function useJobs(status?: JobStatus, page = 1, pageSize = 20) {
   return useQuery({
     queryKey: ['jobs', { status, page, pageSize }],
     queryFn: () => jobsApi.listJobs({ status, page, page_size: pageSize }),
-    refetchInterval: 5000, // Poll every 5s for status updates
+    refetchInterval: JOBS_POLL_INTERVAL,
   });
 }
 
@@ -18,7 +19,7 @@ export function useJob(jobId: string) {
     refetchInterval: (query) => {
       const data = query.state.data as ReplayJob | undefined;
       // Faster polling for running jobs
-      return data?.status === 'running' ? 1000 : 5000;
+      return data?.status === 'running' ? JOBS_RUNNING_POLL_INTERVAL : JOBS_POLL_INTERVAL;
     },
   });
 }

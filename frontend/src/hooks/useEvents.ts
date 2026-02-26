@@ -6,6 +6,7 @@ import { useWebSocket, WebSocketStatus } from './useWebSocket';
 import { useEventStore } from '@/stores/eventStore';
 import * as eventsApi from '@/lib/api/events';
 import type { CDCEvent, EventStreamMessage } from '@/types/event';
+import { STREAM_STATS_POLL_INTERVAL } from '@/lib/constants';
 
 export function useRecentEvents(count = 100) {
   return useQuery({
@@ -18,7 +19,7 @@ export function useStreamStats() {
   return useQuery({
     queryKey: ['events', 'stream', 'stats'],
     queryFn: eventsApi.getStreamStats,
-    refetchInterval: 5000,
+    refetchInterval: STREAM_STATS_POLL_INTERVAL,
   });
 }
 

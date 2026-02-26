@@ -36,7 +36,9 @@ export async function register(data: RegisterRequest): Promise<User> {
   return response.data;
 }
 
-export async function getCurrentUser(): Promise<User> {
-  const response = await apiClient.get<User>('/auth/me');
+export async function getCurrentUser(token?: string): Promise<User> {
+  const response = await apiClient.get<User>('/auth/me', {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
   return response.data;
 }

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { COOKIE_NAME, LOCAL_STORAGE_KEY } from '@/lib/constants';
 
 export interface User {
   id: string;
@@ -22,13 +23,13 @@ interface AuthState {
 function setAuthCookie(token: string) {
   if (typeof document !== 'undefined') {
     // Set cookie with 7 day expiry, SameSite=Lax for security
-    document.cookie = `walstream-token=${token}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
+    document.cookie = `${COOKIE_NAME}=${token}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
   }
 }
 
 function removeAuthCookie() {
   if (typeof document !== 'undefined') {
-    document.cookie = 'walstream-token=; path=/; max-age=0';
+    document.cookie = `${COOKIE_NAME}=; path=/; max-age=0`;
   }
 }
 
@@ -57,7 +58,7 @@ export const useAuthStore = create<AuthState>()(
       setUser: (user) => set({ user }),
     }),
     {
-      name: 'walstream-auth',
+      name: LOCAL_STORAGE_KEY,
       partialize: (state) => ({
         token: state.token,
         user: state.user,

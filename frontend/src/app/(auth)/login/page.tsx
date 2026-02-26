@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Activity, Loader2 } from 'lucide-react';
+import { Activity, Loader2, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -29,10 +29,21 @@ const loginSchema = z.object({
 type LoginFormValues = z.infer<typeof loginSchema>;
 
 export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { toast } = useToast();
   const { login: setAuth, isAuthenticated } = useAuthStore();
   const [isLoading, setIsLoading] = useState(false);
+
+  const isExpired = searchParams.get('expired') === 'true';
 
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
@@ -42,24 +53,19 @@ export default function LoginPage() {
     },
   });
 
-  // Redirect if already authenticated
-  if (isAuthenticated) {
-    router.push('/');
-    return null;
-  }
+  useEffect(() => {
+    if (isAuthenticated) {
+      router.replace('/');
+    }
+  }, [isAuthenticated, router]);
+
+  if (isAuthenticated) return null;
 
   async function onSubmit(data: LoginFormValues) {
     setIsLoading(true);
     try {
       const tokenResponse = await login(data);
-
-      // Store token temporarily to fetch user
-      localStorage.setItem(
-        'walstream-auth',
-        JSON.stringify({ state: { token: tokenResponse.access_token } })
-      );
-
-      const user = await getCurrentUser();
+      const user = await getCurrentUser(tokenResponse.access_token);
       setAuth(tokenResponse.access_token, user);
 
       toast({
@@ -96,6 +102,13 @@ export default function LoginPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {isExpired && (
+            <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-500 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              Your session expired. Please sign in again.
+            </div>
+          )}
+
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
               <FormField

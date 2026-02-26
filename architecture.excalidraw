@@ -1,0 +1,612 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "mcp-excalidraw-server",
+  "elements": [
+    {
+      "id": "title",
+      "type": "text",
+      "x": 40,
+      "y": 20,
+      "strokeColor": "#1e1e1e",
+      "text": "WalStream CDC Platform",
+      "fontSize": 28,
+      "createdAt": "2026-02-19T08:14:20.657Z",
+      "updatedAt": "2026-02-19T08:14:20.657Z",
+      "version": 1
+    },
+    {
+      "id": "src-pg",
+      "type": "rectangle",
+      "x": 40,
+      "y": 90,
+      "width": 180,
+      "height": 90,
+      "backgroundColor": "#99e9f2",
+      "strokeColor": "#0c8599",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "Source\nPostgreSQL"
+      },
+      "createdAt": "2026-02-19T08:14:20.657Z",
+      "updatedAt": "2026-02-19T08:14:20.657Z",
+      "version": 1
+    },
+    {
+      "id": "ingestor",
+      "type": "rectangle",
+      "x": 340,
+      "y": 90,
+      "width": 180,
+      "height": 90,
+      "backgroundColor": "#eebefa",
+      "strokeColor": "#9c36b5",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "Ingestor"
+      },
+      "createdAt": "2026-02-19T08:14:20.657Z",
+      "updatedAt": "2026-02-19T08:14:20.657Z",
+      "version": 1
+    },
+    {
+      "id": "redis",
+      "type": "rectangle",
+      "x": 640,
+      "y": 50,
+      "width": 180,
+      "height": 80,
+      "backgroundColor": "#ffd8a8",
+      "strokeColor": "#e8590c",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "Redis Streams"
+      },
+      "createdAt": "2026-02-19T08:14:20.657Z",
+      "updatedAt": "2026-02-19T08:14:20.657Z",
+      "version": 1
+    },
+    {
+      "id": "kafka",
+      "type": "rectangle",
+      "x": 640,
+      "y": 160,
+      "width": 180,
+      "height": 80,
+      "backgroundColor": "#ffd8a8",
+      "strokeColor": "#e8590c",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "Kafka"
+      },
+      "createdAt": "2026-02-19T08:14:20.657Z",
+      "updatedAt": "2026-02-19T08:14:20.657Z",
+      "version": 1
+    },
+    {
+      "id": "replayer",
+      "type": "rectangle",
+      "x": 940,
+      "y": 90,
+      "width": 180,
+      "height": 90,
+      "backgroundColor": "#b2f2bb",
+      "strokeColor": "#2f9e44",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "gRPC\nReplayer"
+      },
+      "createdAt": "2026-02-19T08:14:20.657Z",
+      "updatedAt": "2026-02-19T08:14:20.657Z",
+      "version": 1
+    },
+    {
+      "id": "tgt-pg",
+      "type": "rectangle",
+      "x": 1240,
+      "y": 90,
+      "width": 180,
+      "height": 90,
+      "backgroundColor": "#99e9f2",
+      "strokeColor": "#0c8599",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "Target\nPostgreSQL"
+      },
+      "createdAt": "2026-02-19T08:14:20.657Z",
+      "updatedAt": "2026-02-19T08:14:20.657Z",
+      "version": 1
+    },
+    {
+      "id": "control",
+      "type": "rectangle",
+      "x": 340,
+      "y": 330,
+      "width": 220,
+      "height": 90,
+      "backgroundColor": "#a5d8ff",
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "FastAPI\nControl Plane"
+      },
+      "createdAt": "2026-02-19T08:14:20.657Z",
+      "updatedAt": "2026-02-19T08:14:20.657Z",
+      "version": 1
+    },
+    {
+      "id": "frontend",
+      "type": "rectangle",
+      "x": 940,
+      "y": 330,
+      "width": 180,
+      "height": 90,
+      "backgroundColor": "#a5d8ff",
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "Next.js\nDashboard"
+      },
+      "createdAt": "2026-02-19T08:14:20.657Z",
+      "updatedAt": "2026-02-19T08:14:20.657Z",
+      "version": 1
+    },
+    {
+      "id": "monitoring",
+      "type": "rectangle",
+      "x": 40,
+      "y": 330,
+      "width": 180,
+      "height": 90,
+      "backgroundColor": "#ffc9c9",
+      "strokeColor": "#e03131",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "Prometheus\n+ Grafana"
+      },
+      "createdAt": "2026-02-19T08:14:20.657Z",
+      "updatedAt": "2026-02-19T08:14:20.657Z",
+      "version": 1
+    },
+    {
+      "id": "a-wal",
+      "type": "arrow",
+      "x": 228,
+      "y": 135,
+      "width": 120,
+      "height": 1,
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "WAL"
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          104,
+          0
+        ]
+      ],
+      "createdAt": "2026-02-19T08:14:35.908Z",
+      "updatedAt": "2026-02-19T08:14:35.908Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "src-pg",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "ingestor",
+        "focus": 0,
+        "gap": 8
+      }
+    },
+    {
+      "id": "a-redis",
+      "type": "arrow",
+      "x": 527.9114908229463,
+      "y": 120.31327637655804,
+      "width": 120,
+      "height": 1,
+      "strokeColor": "#e8590c",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "XADD"
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          104.1770183541073,
+          -15.626552753116073
+        ]
+      ],
+      "createdAt": "2026-02-19T08:14:35.908Z",
+      "updatedAt": "2026-02-19T08:14:35.908Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "ingestor",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "redis",
+        "focus": 0,
+        "gap": 8
+      }
+    },
+    {
+      "id": "a-kafka",
+      "type": "arrow",
+      "x": 527.8185851202144,
+      "y": 156.19402677604646,
+      "width": 120,
+      "height": 1,
+      "strokeColor": "#e8590c",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "Produce"
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          104.36282975957124,
+          22.611946447907087
+        ]
+      ],
+      "createdAt": "2026-02-19T08:14:35.908Z",
+      "updatedAt": "2026-02-19T08:14:35.908Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "ingestor",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "kafka",
+        "focus": 0,
+        "gap": 8
+      }
+    },
+    {
+      "id": "a-redis-replay",
+      "type": "arrow",
+      "x": 827.9114908229463,
+      "y": 104.68672362344196,
+      "width": 120,
+      "height": 1,
+      "strokeColor": "#2f9e44",
+      "strokeWidth": 1,
+      "strokeStyle": "dashed",
+      "roughness": 0,
+      "label": {
+        "text": "recent"
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          104.1770183541073,
+          15.626552753116073
+        ]
+      ],
+      "createdAt": "2026-02-19T08:14:35.908Z",
+      "updatedAt": "2026-02-19T08:14:35.908Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "redis",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "replayer",
+        "focus": 0,
+        "gap": 8
+      }
+    },
+    {
+      "id": "a-kafka-replay",
+      "type": "arrow",
+      "x": 827.8185851202144,
+      "y": 178.80597322395354,
+      "width": 120,
+      "height": 1,
+      "strokeColor": "#2f9e44",
+      "strokeWidth": 1,
+      "strokeStyle": "dashed",
+      "roughness": 0,
+      "label": {
+        "text": "historical"
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          104.36282975957124,
+          -22.611946447907087
+        ]
+      ],
+      "createdAt": "2026-02-19T08:14:35.908Z",
+      "updatedAt": "2026-02-19T08:14:35.908Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "kafka",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "replayer",
+        "focus": 0,
+        "gap": 8
+      }
+    },
+    {
+      "id": "a-apply",
+      "type": "arrow",
+      "x": 1128,
+      "y": 135,
+      "width": 120,
+      "height": 1,
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "Apply"
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          104,
+          0
+        ]
+      ],
+      "createdAt": "2026-02-19T08:14:35.908Z",
+      "updatedAt": "2026-02-19T08:14:35.908Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "replayer",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "tgt-pg",
+        "focus": 0,
+        "gap": 8
+      }
+    },
+    {
+      "id": "a-ctrl-replay",
+      "type": "arrow",
+      "x": 566.1421346593751,
+      "y": 326.9411856581896,
+      "width": 1,
+      "height": 150,
+      "strokeColor": "#2f9e44",
+      "strokeWidth": 1,
+      "strokeStyle": "dashed",
+      "roughness": 0,
+      "label": {
+        "text": "orchestrates"
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          366.46573068124985,
+          -151.64099200603437
+        ]
+      ],
+      "createdAt": "2026-02-19T08:14:35.908Z",
+      "updatedAt": "2026-02-19T08:14:35.908Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "control",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "replayer",
+        "focus": 0,
+        "gap": 8
+      }
+    },
+    {
+      "id": "a-ctrl-redis",
+      "type": "arrow",
+      "x": 499.81710037401086,
+      "y": 324.2933085478818,
+      "width": 1,
+      "height": 100,
+      "strokeColor": "#e8590c",
+      "strokeWidth": 1,
+      "strokeStyle": "dashed",
+      "roughness": 0,
+      "label": {
+        "text": "WS stream"
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          185.27807995373263,
+          -188.5866170957636
+        ]
+      ],
+      "createdAt": "2026-02-19T08:14:35.908Z",
+      "updatedAt": "2026-02-19T08:14:35.908Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "control",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "redis",
+        "focus": 0,
+        "gap": 8
+      }
+    },
+    {
+      "id": "a-mon-ctrl",
+      "type": "arrow",
+      "x": 228,
+      "y": 375,
+      "width": 120,
+      "height": 1,
+      "strokeColor": "#e03131",
+      "strokeWidth": 1,
+      "strokeStyle": "dashed",
+      "roughness": 0,
+      "label": {
+        "text": "scrapes"
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          104,
+          0
+        ]
+      ],
+      "createdAt": "2026-02-19T08:14:35.908Z",
+      "updatedAt": "2026-02-19T08:14:35.908Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "monitoring",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "control",
+        "focus": 0,
+        "gap": 8
+      }
+    },
+    {
+      "id": "a-fe-ctrl3",
+      "type": "arrow",
+      "x": 932,
+      "y": 375,
+      "width": 380,
+      "height": 1,
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "REST + WebSocket"
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          -364,
+          0
+        ]
+      ],
+      "createdAt": "2026-02-19T08:17:08.384Z",
+      "updatedAt": "2026-02-19T08:17:08.384Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "frontend",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "control",
+        "focus": 0,
+        "gap": 8
+      }
+    },
+    {
+      "id": "cdb",
+      "type": "rectangle",
+      "x": 40,
+      "y": 470,
+      "width": 180,
+      "height": 80,
+      "backgroundColor": "#a5d8ff",
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "label": {
+        "text": "Control DB"
+      },
+      "createdAt": "2026-02-19T08:22:57.582Z",
+      "updatedAt": "2026-02-19T08:22:57.582Z",
+      "version": 1
+    },
+    {
+      "id": "a-ctrl-cdb",
+      "type": "arrow",
+      "x": 335.96242004566676,
+      "y": 423.10960404323436,
+      "width": 1,
+      "height": 60,
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          -108.59150675800012,
+          45.81204191353129
+        ]
+      ],
+      "createdAt": "2026-02-19T08:22:57.582Z",
+      "updatedAt": "2026-02-19T08:22:57.582Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "control",
+        "focus": 0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "cdb",
+        "focus": 0,
+        "gap": 8
+      }
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff",
+    "gridSize": null
+  }
+}

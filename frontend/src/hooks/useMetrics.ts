@@ -9,6 +9,7 @@ import {
   extractHistogramPercentiles,
   computeRate,
 } from '@/lib/utils/prometheus-parser';
+import { METRICS_POLL_INTERVAL } from '@/lib/constants';
 
 interface MetricsResponse {
   timestamp: string;
@@ -66,7 +67,7 @@ async function fetchMetrics(): Promise<MetricsResponse> {
   return response.json();
 }
 
-export function useRawMetrics(refreshInterval = 10000) {
+export function useRawMetrics(refreshInterval = METRICS_POLL_INTERVAL) {
   return useQuery({
     queryKey: ['metrics', 'raw'],
     queryFn: fetchMetrics,
@@ -75,7 +76,7 @@ export function useRawMetrics(refreshInterval = 10000) {
   });
 }
 
-export function useMetricsSnapshot(refreshInterval = 10000) {
+export function useMetricsSnapshot(refreshInterval = METRICS_POLL_INTERVAL) {
   const previousRef = useRef<{ timestamp: number; snapshot: MetricsSnapshot } | null>(null);
   const historyRef = useRef<MetricsHistory[]>([]);
 
@@ -89,10 +90,11 @@ export function useMetricsSnapshot(refreshInterval = 10000) {
     // Extract values
     const eventsIngested = getMetricValue(data.ingestor, 'walstream_events_ingested_total') || 0;
     const eventsReplayed = getMetricValue(data.replayer, 'walstream_events_replayed_total') || 0;
-    const eventsDuplicate = getMetricValue(data.replayer, 'walstream_events_duplicate_total') || 0;
+    const eventsDuplicate = getMetricValue(data.replayer, 'walstream_events_duplicates_total') || 0;
     const eventsFailed = getMetricValue(data.replayer, 'walstream_events_failed_total') || 0;
     const redisStreamLength = getMetricValue(allMetrics, 'walstream_redis_stream_length') || 0;
-    const activeJobs = getMetricValue(data.control, 'walstream_active_jobs') || 0;
+    const jobsByState = getMetricsByLabel(data.control, 'walstream_jobs_active', 'state');
+    const activeJobs = Object.values(jobsByState).reduce((sum, value) => sum + value, 0);
     const totalJobsCreated = getMetricValue(data.control, 'walstream_jobs_created_total') || 0;
 
     // Events by operation

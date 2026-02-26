@@ -9,52 +9,50 @@ WalStream is a production-ready CDC (Change Data Capture) system that:
 - Captures PostgreSQL WAL changes in real-time using `wal2json` format-version 2
 - Dual-writes to Redis Streams (low-latency buffer) and Kafka (durable archive)
 - Provides speed-controlled replay with idempotency guarantees
-- Offers a REST API control plane with JWT authentication
+- Offers a REST API control plane with JWT user auth and API-key service auth
 - Includes real-time WebSocket event streaming
 - Uses async-native libraries throughout (aiokafka, redis.asyncio, grpc.aio)
 
 ## Architecture
 
+![WalStream CDC System Design](architecture.png)
+
 ```
-PostgreSQL (WAL with wal2json v2)
-       |
-       v
-   Ingestor ----+----> Redis Stream (live buffer, ~1hr, MAXLEN trimmed)
-       |        |
-       |        +----> Kafka Topic (durable archive, 7 days, idempotent producer)
-       |
-       v
-   Prometheus Metrics (:9090)
+Source PostgreSQL (:5432, WAL + wal2json v2)
+  -> Ingestor
+      -> Redis Stream (live buffer, MAXLEN trimmed)
+      -> Kafka Topic (durable archive)
+      -> Prometheus metrics (:9090)
 
-                     +------------------+
-                     |  Replay Router   |
-                     | Redis < 1hr age  |
-                     | Kafka >= 1hr age |
-                     +--------+---------+
-                              |
-                              v
-   FastAPI Control Plane (:8000)
-       |
-       +---> Job Workers (lease-based, checkpoint/resume)
-       |           |
-       |           v
-       |    +------------------+
-       |    | gRPC Replayer    |
-       |    | (centralized     |
-       |    |  deduplication)  |
-       |    +--------+---------+
-       |             |
-       |             v
-       |      Target Database
-       |
-       +---> WebSocket Events (/api/v1/events/ws)
-       +---> REST API (/api/v1/docs)
-       +---> Prometheus Metrics (:9091)
+Worker Service (`app.workers.manager`)
+  -> Replay Router (Redis < 1h / Kafka >= 1h)
+  -> ReplayEvent RPC calls
+
+gRPC Replayer (:50051, :9092 metrics)
+  -> Target Database
+
+FastAPI Control API (:8000, :9091 metrics)
+  -> REST API (/api/v1/*)
+  -> WebSocket Events (/api/v1/events/ws)
+  -> AuthN/AuthZ (JWT + API keys, RBAC, audit, rate limiting)
+
+Control PostgreSQL (:5433; jobs, users, audit logs, API keys, dedup)
+  <-> FastAPI Control API
+  <-> Worker Service
+  <-> gRPC Replayer (dedup state)
+
+Frontend Dashboard (:3000)
+  -> Control API (REST + WebSocket)
+  -> Metrics proxy UI (/api/metrics)
+
+Prometheus (:9099)
+  -> Scrapes ingestor/control/replayer metrics
+  -> Alertmanager (:9093)
+  -> Grafana (:3001)
 ```
 
-## Architectural Decisions (As of February 15, 2026)
+## Architectural Decisions
 
-- **FastAPI control plane over Django**: Legacy Django scaffolding was removed and all control-plane features live in `control/app/`.
 - **Centralized dedup in Replayer**: Workers do not maintain local dedup state; idempotency is enforced in `replayer/server.py`.
 - **At-least-once replay semantics**: Replayer uses `exists -> apply -> mark_processed` so failed applies are retried instead of being pre-marked as duplicates.
 - **Fail-fast job progression on unreplayable events**: Workers retry each event up to `MAX_EVENT_RETRIES` times after the initial attempt; if still failing, the job is marked `FAILED` without advancing checkpoint beyond the failed event.
@@ -62,9 +60,13 @@ PostgreSQL (WAL with wal2json v2)
 - **Source-pinned resume behavior**: Resumed jobs reuse their original `replay_source` to avoid cross-source checkpoint mismatches (for example Redis stream IDs interpreted as Kafka offsets).
 - **Per-partition Kafka checkpoints**: Kafka progress is stored in JSON (`checkpoint`) keyed by partition, while `last_processed_id` is retained as a fallback string checkpoint.
 - **Safe Kafka partition seek semantics**: On resume, uncheckpointed partitions seek to `start_ms`; if no offset exists at/after `start_ms`, they seek to partition end to avoid replaying out-of-window historical data.
+- **Cross-partition Kafka end-boundary safety**: Replay does not stop globally on the first out-of-range message; partitions are completed independently to avoid dropping in-range records from other partitions.
 - **Lease-based worker ownership**: Job execution uses DB-backed leases plus renewal to prevent concurrent workers from processing the same job.
+- **Lease expiry recovery for orphaned jobs**: Workers can reclaim expired-lease `RUNNING` jobs after crashes, not just `QUEUED` jobs.
+- **Read/write session separation by path**: Auth and health/readiness/event-stream read paths use read sessions; API key `last_used_at` updates are handled with explicit write context.
+- **Control-plane operational gauges**: `walstream_jobs_active` and `walstream_job_lease_expired` are exported for replay stall and lease-integrity alerting.
 - **Async I/O across services**: `aiokafka`, `redis.asyncio`, `grpc.aio`, and async SQLAlchemy are used to keep ingestion and replay non-blocking.
-- **JWT auth for REST and WebSocket**: API routes and WebSocket stream are token-authenticated to keep monitoring and control endpoints private.
+- **Hybrid auth model**: User-facing clients use JWT; service clients can authenticate with `X-API-Key`; health probes remain public.
 
 ## Frontend Dashboard
 
@@ -87,7 +89,7 @@ Frontend (Next.js 14 + TypeScript)
 - **Framework**: Next.js 14 with App Router
 - **Language**: TypeScript
 - **UI Components**: shadcn/ui + Tailwind CSS
-- **State Management**: Zustand (auth, events)
+- **State Management**: Zustand (auth, events, ui)
 - **Server State**: TanStack Query (React Query)
 - **Charts**: Recharts
 - **Virtualization**: @tanstack/react-virtual
@@ -100,6 +102,7 @@ Frontend (Next.js 14 + TypeScript)
 - **Speed-Controlled Replay**: Configurable 0.1x to 100x replay speed
 - **Durable Job Execution**: Lease-based workers with checkpoint/resume
 - **REST API**: FastAPI-based control plane with OpenAPI docs
+- **Security Controls**: RBAC, API keys, audit logging, and Redis-backed rate limiting
 - **WebSocket Streaming**: Real-time event monitoring
 - **Prometheus Metrics**: Full observability for all components
 - **Async-Native**: aiokafka, redis.asyncio, grpc.aio for non-blocking I/O
@@ -134,6 +137,7 @@ WalStream uses **two PostgreSQL databases**:
 git clone <repo-url>
 cd CDC-FastAPI
 cp .env.example .env
+cp frontend/.env.example frontend/.env.local
 ```
 
 ### 2. Start Infrastructure
@@ -186,8 +190,10 @@ The Docker setup automatically:
 - Configures PostgreSQL with `wal_level=logical`
 - Runs `db/init.sql` to create tables and replication user
 
-> **Note**: The default `postgres:16-alpine` image does NOT include wal2json.
-> For production, use an image with wal2json pre-installed, or build a custom image:
+> **Note**: In this repo, `docker-compose.yml` already builds the source
+> PostgreSQL service from `db/Dockerfile`, which installs `wal2json`.
+> If you run PostgreSQL outside this compose stack, ensure `wal2json` is
+> installed on that server:
 > ```dockerfile
 > FROM postgres:16
 > RUN apt-get update && apt-get install -y postgresql-16-wal2json && rm -rf /var/lib/apt/lists/*
@@ -398,6 +404,12 @@ REDIS_URL=redis://localhost:6379/0
 KAFKA_BROKER=localhost:29092
 ```
 
+Create frontend local env from template:
+
+```bash
+cp frontend/.env.example frontend/.env.local
+```
+
 ### 7. Start Services (Local Development)
 
 ```bash
@@ -492,6 +504,10 @@ curl -X POST http://localhost:8000/api/v1/auth/register \
 # Get token
 TOKEN=$(curl -X POST http://localhost:8000/api/v1/auth/token \
   -d "username=admin&password=secret123" | jq -r '.access_token')
+
+# Service-to-service auth (if an API key is provisioned)
+curl http://localhost:8000/api/v1/jobs \
+  -H "X-API-Key: $API_KEY"
 ```
 
 ### Replay Jobs
@@ -548,18 +564,19 @@ CDC-FastAPI/
 │   │   │   └── api/           # API routes (metrics proxy)
 │   │   ├── components/        # React components
 │   │   │   ├── ui/            # shadcn/ui components
-│   │   │   ├── layout/        # Sidebar, Header
+│   │   │   ├── layout/        # Sidebar, Header, ThemeToggle
 │   │   │   ├── auth/          # AuthGuard
 │   │   │   ├── errors/        # ErrorBoundary, ErrorFallback
 │   │   │   ├── jobs/          # Job management
 │   │   │   ├── events/        # Event stream
 │   │   │   └── metrics/       # Charts & gauges
 │   │   ├── hooks/             # Custom React hooks
-│   │   ├── stores/            # Zustand stores (auth, events)
-│   │   ├── lib/               # API client, utilities
+│   │   ├── stores/            # Zustand stores (auth, events, ui)
+│   │   ├── lib/               # API client, constants, utilities
 │   │   ├── types/             # TypeScript types
-│   │   └── middleware.ts       # Auth route protection
+│   │   └── middleware.ts      # Auth route protection
 │   ├── Dockerfile             # Multi-stage Docker build
+│   ├── .env.example           # Frontend environment template
 │   └── package.json
 │
 ├── walstream-proto/           # Protobuf definitions & Pydantic models
@@ -585,12 +602,16 @@ CDC-FastAPI/
 │   │   │       ├── jobs.py    # Replay job management
 │   │   │       ├── events.py  # WebSocket streaming
 │   │   │       └── health.py  # Health checks
+│   │   ├── middleware/        # Auth context, audit, and rate limiting
 │   │   ├── models/            # SQLAlchemy ORM models
 │   │   │   ├── replay_job.py  # ReplayJob with lease support
 │   │   │   ├── user.py        # User model
-│   │   │   └── dedup_state.py # Deduplication state
+│   │   │   ├── dedup_state.py # Deduplication state
+│   │   │   ├── api_key.py     # API key model
+│   │   │   └── audit_log.py   # Audit log model
 │   │   ├── services/          # Business logic
 │   │   │   ├── replay_router.py  # Redis/Kafka source routing
+│   │   │   ├── job_service.py    # Job lifecycle transaction logic
 │   │   │   └── dedup_store.py    # Legacy dedup utility (not in active replay path)
 │   │   └── workers/           # Background workers
 │   │       ├── job_worker.py  # Durable job execution
@@ -680,6 +701,8 @@ docker-compose --profile monitoring up -d
 | `walstream_events_failed_total` | Failed replay attempts |
 | `walstream_ingest_latency_seconds` | WAL-to-publish latency |
 | `walstream_replay_latency_seconds` | Per-event replay latency |
+| `walstream_jobs_active{state="queued|running"}` | Active replay jobs by state |
+| `walstream_job_lease_expired{state="running"}` | Running jobs with expired worker leases |
 
 ### SLO Targets & Alert Thresholds
 
@@ -883,16 +906,16 @@ See `google_python_style_guide.md` for a local reference.
 - [x] Error boundaries (`ErrorBoundary`, `ErrorFallback`, per-route `error.tsx`)
 - [x] `not-found.tsx` — custom 404 page
 - [x] Docker config (multi-stage `Dockerfile`, `.dockerignore`)
-- [ ] Stale-cookie session handling UX alignment between middleware guards and API 401 handling
-- [ ] Degraded readiness/503 UI states for dashboard health cards and overview widgets
-- [ ] **Dark/light mode toggle** (`ThemeToggle.tsx`) — Tailwind dark mode is configured but no toggle UI
-- [ ] **Mobile responsive sidebar** — no hamburger menu for small screens
-- [ ] **Extracted dashboard components** — `OverviewCards`, `RecentJobs`, `HealthStatus`, `QuickActions` are inline in `page.tsx`, not reusable components
-- [ ] **UI store** (`stores/uiStore.ts`) — sidebar collapse, theme state
-- [ ] **Utility files** — `lib/utils/formatters.ts`, `lib/constants.ts`
-- [ ] **Frontend `.env.example`** — environment template for developers
-- [ ] **`useDebounce` hook** — for search input debouncing
-- [ ] **Dynamic imports** for chart components (code splitting)
+- [x] Stale-cookie session handling UX alignment between middleware guards and API 401 handling
+- [x] Degraded readiness/503 UI states for dashboard health cards and overview widgets
+- [x] **Dark/light mode toggle** (`ThemeToggle.tsx`) — `next-themes` with system/light/dark support
+- [x] **Mobile responsive sidebar** — hamburger menu with overlay on small screens
+- [x] **Extracted dashboard components** — `OverviewCards`, `RecentJobs`, `HealthStatus` extracted from `page.tsx`
+- [x] **UI store** (`stores/uiStore.ts`) — sidebar open/close state for mobile
+- [x] **Utility files** — `lib/utils/formatters.ts`, `lib/constants.ts`
+- [x] **Frontend `.env.example`** — environment template for developers
+- [x] **`useDebounce` hook** — for search input debouncing in EventFilters
+- [x] **Dynamic imports** for chart components (code splitting with `next/dynamic`)
 
 ### Frontend — Testing
 

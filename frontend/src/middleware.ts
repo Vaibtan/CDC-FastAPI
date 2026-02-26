@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+// Inline constant — middleware runs in Edge Runtime and cannot import from lib/constants
+const COOKIE_NAME = 'walstream-token';
+
 // Routes that require authentication
 const protectedRoutes = ['/', '/jobs', '/events', '/metrics'];
 
@@ -11,7 +14,7 @@ export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Check for auth token in cookies
-  const token = request.cookies.get('walstream-token')?.value;
+  const token = request.cookies.get(COOKIE_NAME)?.value;
   const isAuthenticated = !!token;
 
   // Check if current route is protected

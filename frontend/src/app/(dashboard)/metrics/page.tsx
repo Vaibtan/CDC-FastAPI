@@ -1,20 +1,44 @@
 'use client';
 
-import { Activity, Database, Zap, AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
+import dynamic from 'next/dynamic';
 import { Header } from '@/components/layout/Header';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ThroughputGauge } from '@/components/metrics/ThroughputGauge';
-import { EventsLineChart } from '@/components/metrics/EventsLineChart';
-import { OperationsBarChart } from '@/components/metrics/OperationsBarChart';
-import { ReplayStatusChart } from '@/components/metrics/ReplayStatusChart';
-import { LatencyChart } from '@/components/metrics/LatencyChart';
-import { RedisStreamCard } from '@/components/metrics/RedisStreamCard';
 import { StatsCard } from '@/components/metrics/StatsCard';
 import { useMetricsSnapshot } from '@/hooks/useMetrics';
+import { useJobs } from '@/hooks/useJobs';
+import { Activity, Database, Zap } from 'lucide-react';
+import { METRICS_POLL_INTERVAL } from '@/lib/constants';
+
+const ThroughputGauge = dynamic(
+  () => import('@/components/metrics/ThroughputGauge').then((m) => m.ThroughputGauge),
+  { ssr: false, loading: () => <Skeleton className="h-48" /> }
+);
+const EventsLineChart = dynamic(
+  () => import('@/components/metrics/EventsLineChart').then((m) => m.EventsLineChart),
+  { ssr: false, loading: () => <Skeleton className="h-80" /> }
+);
+const OperationsBarChart = dynamic(
+  () => import('@/components/metrics/OperationsBarChart').then((m) => m.OperationsBarChart),
+  { ssr: false, loading: () => <Skeleton className="h-80" /> }
+);
+const ReplayStatusChart = dynamic(
+  () => import('@/components/metrics/ReplayStatusChart').then((m) => m.ReplayStatusChart),
+  { ssr: false, loading: () => <Skeleton className="h-80" /> }
+);
+const LatencyChart = dynamic(
+  () => import('@/components/metrics/LatencyChart').then((m) => m.LatencyChart),
+  { ssr: false, loading: () => <Skeleton className="h-64" /> }
+);
+const RedisStreamCard = dynamic(
+  () => import('@/components/metrics/RedisStreamCard').then((m) => m.RedisStreamCard),
+  { ssr: false, loading: () => <Skeleton className="h-80" /> }
+);
 
 export default function MetricsPage() {
-  const { snapshot, history, isLoading, error } = useMetricsSnapshot(10000);
+  const { snapshot, history, isLoading, error } = useMetricsSnapshot(METRICS_POLL_INTERVAL);
+  const { data: jobsData } = useJobs(undefined, 1, 1);
 
   if (error) {
     return (
@@ -84,7 +108,7 @@ export default function MetricsPage() {
             />
             <StatsCard
               title="Total Jobs Created"
-              value={snapshot.totalJobsCreated}
+              value={jobsData?.total ?? snapshot.totalJobsCreated}
             />
           </div>
         ) : null}
